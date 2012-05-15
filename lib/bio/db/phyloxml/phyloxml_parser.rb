@@ -13,10 +13,7 @@
 #
 # == Requirements
 # 
-# Libxml2 XML parser is required. Install libxml-ruby bindings from
-# http://libxml.rubyforge.org or
-#
-#   gem install -r libxml-ruby
+# Nokogiri XML parser is required. 
 #
 # == References
 #
@@ -25,8 +22,9 @@
 # * https://www.nescent.org/wg_phyloinformatics/PhyloSoC:PhyloXML_support_in_BioRuby
 
 
+require 'nokogiri'
 require 'uri'
-require 'libxml'
+require 'open-uri'
 
 require 'bio/tree'
 require 'bio/db/phyloxml/phyloxml_elements'
@@ -69,13 +67,13 @@ module PhyloXML
   #
   class Parser
 
-    include LibXML
+    include Nokogiri
 
     # After parsing all the trees, if there is anything else in other xml format,
     # it is saved in this array of PhyloXML::Other objects
     attr_reader :other
 
-    # Initializes LibXML::Reader and reads the file until it reaches the first
+    # Initializes XML::Reader and reads the file until it reaches the first
     # phylogeny element.
     #
     # Example: Create a new Bio::PhyloXML::Parser object.
@@ -105,9 +103,8 @@ module PhyloXML
         filename = _secure_filename(filename)
         _validate(:file, filename) if validate
         # XML::Parser::Options::NONET for security reason
-        @reader = XML::Reader.file(filename,
-                                   { :options =>
-                                     LibXML::XML::Parser::Options::NONET })
+        @f = File.open(filename)
+        @reader = XML.Reader(@f, nil, nil, XML::ParseOptions::NONET)
         _skip_leader
       }
       if block_given? then
@@ -122,7 +119,7 @@ module PhyloXML
       end
     end
 
-    # Initializes LibXML::Reader and reads the file until it reaches the first
+    # Initializes XML::Reader and reads the file until it reaches the first
     # phylogeny element.
     #
     # Create a new Bio::PhyloXML::Parser object.
@@ -153,7 +150,8 @@ module PhyloXML
 
       obj = new(nil, validate)
       obj.instance_eval {
-        @reader = XML::Reader.file(uri)
+        @f = OpenURI::open_uri(uri)
+        @reader = XML::Reader.file(@f, uri)
         _skip_leader
       }
       if block_given? then
@@ -173,20 +171,23 @@ module PhyloXML
     # Bio::PhyloXML internal use only.
     class ClosedPhyloXMLParser #:nodoc:
       def method_missing(*arg)
-        raise LibXML::XML::Error, 'closed PhyloXML::Parser object'
+        raise RuntimeError, 'closed PhyloXML::Parser object'
       end
     end #class ClosedPhyloXMLParser
 
-    # Closes the LibXML::Reader inside the object.
+    # Closes the XML::Reader inside the object.
     # It also closes the opened file if it is created by using
     # Bio::PhyloXML::Parser.open method.
     #
     # When closed object is closed again, or closed object is used,
-    # it raises LibXML::XML::Error.
+    # it raises RuntimeError.
     # ---
     # *Returns*:: nil
     def close
-      @reader.close
+      if closed?
+        raise RuntimeError, 'closed PhyloXML::Parser object'
+      end
+      @f.close if (@f && ! @f.closed?)
       @reader = ClosedPhyloXMLParser.new
       nil
     end
@@ -218,9 +219,8 @@ module PhyloXML
     def self.for_io(io, validate=true)
       obj = new(nil, validate)
       obj.instance_eval {
-        @reader = XML::Reader.io(io,
-                                 { :options =>
-                                   LibXML::XML::Parser::Options::NONET })
+        @reader = XML.Reader(io, nil, nil, XML::ParseOptions::NONET)
+
         _skip_leader
       }
       obj
@@ -228,7 +228,7 @@ module PhyloXML
 
     # (private) returns PhyloXML schema
     def _schema
-      XML::Schema.document(XML::Document.file(File.join(File.dirname(__FILE__),'phyloxml.xsd')))
+      XML::Schema(File.read((File.join(File.dirname(__FILE__), 'phyloxml.xsd'))))
     end
     private :_schema
 
@@ -239,43 +239,48 @@ module PhyloXML
     # * (required) _arg_: filename or string
     # *Returns*:: (undefined)
     def _validate(data_type, arg)
-      options = { :options =>
-        (LibXML::XML::Parser::Options::NOERROR |   # no error messages
-         LibXML::XML::Parser::Options::NOWARNING | # no warning messages
-         LibXML::XML::Parser::Options::NONET)      # no network access
-      }
+      options = 
+        (XML::ParseOptions::NOERROR |   # no error messages
+         XML::ParseOptions::NOWARNING | # no warning messages
+         XML::ParseOptions::NONET)      # no network access
       case data_type
       when :file
         # No validation when special file e.g. FIFO (named pipe)
         return unless File.file?(arg)
-        xml_instance = XML::Document.file(arg, options)
       when :string
-        xml_instance = XML::Document.string(arg, options)
+        # proceed
       else
         # no validation for unknown data type
         return
       end
 
-      schema = _schema
+      if data_type == :file
+        fh = File.open(arg)
+      end
       begin
-        flag = xml_instance.validate_schema(schema) do |msg, flag|
-          # The document of libxml-ruby says that the block is called
-          # when validation failed, but it seems it is never called
-          # even when validation failed!
-          raise "Validation of the XML document against phyloxml.xsd schema failed. #{msg}"
+        xml_instance = XML::parse(fh || arg, nil, nil, options)
+
+        schema = _schema
+        begin
+          errs = schema.validate(xml_instance)
+          unless errs.empty?
+            raise "Validation of the XML document against phyloxml.xsd schema failed. #{errs.first}"
+          end
+        rescue XML::SyntaxError => evar
+          raise "Validation of the XML document against phyloxml.xsd schema failed, or XML error occurred. #{evar.message}"
         end
-      rescue LibXML::XML::Error => evar
-        raise "Validation of the XML document against phyloxml.xsd schema failed, or XML error occurred. #{evar.message}"
+        
+      ensure
+        fh.close if fh
       end
-      unless flag then
-        raise "Validation of the XML document against phyloxml.xsd schema failed."
-      end
-    end
+
+   end
     private :_validate
 
     # (private) It seems that LibXML::XML::Reader reads from the network
-    # even if LibXML::XML::Parser::Options::NONET is set.
+    # even if LibXML::XML::ParseOptions::NONET is set.
     # So, for URI-like filename, '://' is replaced with ':/'.
+    # TODO: check whether this is the case with Nokogiri
     def _secure_filename(filename)
       # for safety, URI-like filename is checked.
       if /\A[a-zA-Z]+\:\/\// =~ filename then
@@ -328,15 +333,14 @@ module PhyloXML
         warn "Bio::PhyloXML::Parser.new(filename) is deprecated. Use Bio::PhyloXML::Parser.open(filename)."
         filename = _secure_filename(str)
         _validate(:file, filename) if validate
-        @reader = XML::Reader.file(filename)
+        @f = File.open(filename)
+        @reader = XML.Reader(f)
         _skip_leader
         return
       end
 
       # initialize for string
-      @reader = XML::Reader.string(str,
-                                   { :options =>
-                                     LibXML::XML::Parser::Options::NONET })
+      @reader = XML.Reader(str, nil, nil, XML::ParseOptions::NONET)
       _skip_leader
     end
 
@@ -424,8 +428,8 @@ module PhyloXML
         if not parsing_clade
 
           if is_element?('phylogeny')
-            @reader["rooted"] == "true" ? tree.rooted = true : tree.rooted = false
-            @reader["rerootable"] == "true" ? tree.rerootable = true : tree.rerootable = false
+            @reader.attribute("rooted") == "true" ? tree.rooted = true : tree.rooted = false
+            @reader.attribute("rerootable") == "true" ? tree.rerootable = true : tree.rerootable = false
             parse_attributes(tree, ["branch_length_unit", 'type'])
           end
 
@@ -446,7 +450,7 @@ module PhyloXML
 
             node= Bio::PhyloXML::Node.new
 
-            branch_length = @reader['branch_length']
+            branch_length = @reader.attribute('branch_length')
 
             parse_attributes(node, ["id_source"])
 
@@ -572,8 +576,21 @@ module PhyloXML
 
     def has_reached_end_element?(str)
       if not(is_end_element?(str))        
-        raise "Warning: Should have reached </#{str}> element here"
+        raise "Warning: Should have reached </#{str}> element here; at #{@reader.name} type #{@reader.node_type}:"
       end
+    end
+
+    def accumulate_text
+      v = nil
+      while @reader.node_type == XML::Reader::TYPE_TEXT do
+        if v
+          v << @reader.value
+        else
+          v = @reader.value
+        end
+        @reader.read
+      end
+      return v
     end
 
     # Parses a simple XML element. for example <speciations>1</speciations>
@@ -583,8 +600,7 @@ module PhyloXML
     def parse_simple_element(object, name)
       if is_element?(name)
         @reader.read
-        object.send("#{name}=", @reader.value)
-        @reader.read
+        object.send("#{name}=", accumulate_text())
         has_reached_end_element?(name)
       end
     end
@@ -596,10 +612,10 @@ module PhyloXML
     end
 
     #Parses list of attributes
-    #use for the code like: clade_relation.type = @reader["type"]
+    #use for the code like: clade_relation.type = @reader.attribute("type")
     def parse_attributes(object, arr_of_attrs)
       arr_of_attrs.each do |attr|
-        object.send("#{attr}=", @reader[attr])
+        object.send("#{attr}=", @reader.attribute(attr))
       end
     end
 
@@ -637,7 +653,7 @@ module PhyloXML
           current_node.distributions << parse_distribution
         when 'node_id'
           id = Id.new
-          id.type = @reader["type"]
+          id.type = @reader.attribute("type")
           @reader.read
           id.value = @reader.value
           @reader.read
@@ -653,7 +669,7 @@ module PhyloXML
           #@todo add unit test for this
         when 'date'
           date = Date.new
-          date.unit = @reader["unit"]
+          date.unit = @reader.attribute("unit")
           #move to the next token, which is always empty, since date tag does not
           # have text associated with it
           @reader.read
@@ -668,7 +684,7 @@ module PhyloXML
           current_node.date = date
         when 'reference'
           reference = Reference.new()
-          reference.doi = @reader['doi']
+          reference.doi = @reader.attribute('doi')
           if not @reader.empty_element?
             while not is_end_element?('reference')
               parse_simple_element(reference, 'desc')
@@ -776,14 +792,14 @@ module PhyloXML
             sequence.location = @reader.value
             @reader.read
           when 'mol_seq'
-            sequence.is_aligned = @reader["is_aligned"]
+            sequence.is_aligned = @reader.attribute("is_aligned")
             @reader.read
             sequence.mol_seq = @reader.value
             @reader.read
             has_reached_end_element?('mol_seq')
           when 'accession'
             sequence.accession = Accession.new
-            sequence.accession.source = @reader["source"]
+            sequence.accession.source = @reader.attribute("source")
             @reader.read
             sequence.accession.value = @reader.value
             @reader.read
@@ -794,7 +810,7 @@ module PhyloXML
             sequence.annotations << parse_annotation
           when 'domain_architecture'
             sequence.domain_architecture = DomainArchitecture.new
-            sequence.domain_architecture.length = @reader["length"]
+            sequence.domain_architecture.length = @reader.attribute("length")
             @reader.read
             @reader.read
             while not(is_end_element?('domain_architecture'))
@@ -854,7 +870,7 @@ module PhyloXML
     end #parse_property
 
     def parse_confidence
-      type = @reader["type"]
+      type = @reader.attribute("type")
       @reader.read
       value = @reader.value.to_f
       @reader.read
@@ -880,8 +896,8 @@ module PhyloXML
     def parse_point
       point = Point.new
 
-      point.geodetic_datum = @reader["geodetic_datum"]
-      point.alt_unit = @reader["alt_unit"]
+      point.geodetic_datum = @reader.attribute("geodetic_datum")
+      point.alt_unit = @reader.attribute("alt_unit")
 
       @reader.read
       while not(is_end_element?('point')) do
@@ -917,10 +933,10 @@ module PhyloXML
 
     def parse_id(tag_name)
       id = Id.new
-      id.provider = @reader["provider"]
+      id.provider = @reader.attribute("provider")
       @reader.read
       id.value = @reader.value
-      @reader.read #@todo shouldn't there be another read?
+      @reader.read # @todo shouldn't there be another read?
       has_reached_end_element?(tag_name)
       return id
     end #parse_id
@@ -938,7 +954,7 @@ module PhyloXML
 
     def parse_binary_characters
       b = PhyloXML::BinaryCharacters.new
-      b.bc_type = @reader['type']
+      b.bc_type = @reader.attribute('type')
 
       parse_attributes(b, ['gained_count', 'absent_count', 'lost_count', 'present_count'])
       if not @reader.empty_element?
@@ -974,12 +990,7 @@ module PhyloXML
     def parse_other
       other_obj = PhyloXML::Other.new
       other_obj.element_name = @reader.name
-      #parse attributes
-      code = @reader.move_to_first_attribute
-      while code ==1
-        other_obj.attributes[@reader.name] = @reader.value
-        code = @reader.move_to_next_attribute        
-      end
+      @reader.attributes.each { |k, v| other_obj.attributes[k] = v }
 
       while not is_end_element?(other_obj.element_name) do
         @reader.read

@@ -15,21 +15,21 @@ load Pathname.new(File.join(File.dirname(__FILE__), ['..'] * 3,
 require 'test/unit'
 
 begin
-  require 'libxml'
+  require 'nokogiri'
 rescue LoadError
 end
 
-if defined?(LibXML) then
+if defined?(Nokogiri) then
   require 'bio/db/phyloxml/phyloxml_parser'
 end
 
 module Bio
-  class TestPhyloXML_Check_LibXML < Test::Unit::TestCase
-    def test_libxml
-      assert(defined?(LibXML),
-             "Error: libxml-ruby library is not present. Please install libxml-ruby library. It is needed for Bio::PhyloXML module. Unit test for PhyloXML will not be performed.")
+  class TestPhyloXML_Check_Nokogiri < Test::Unit::TestCase
+    def test_nokogiri
+      assert(defined?(Nokogiri),
+             "Error: nokogiri library is not present. Please install nokogiri library. It is needed for Bio::PhyloXML module. Unit test for PhyloXML will not be performed.")
     end
-  end #class TestPhyloXML_LibXMLCheck
+  end #class TestPhyloXML_Check_Nokogiri
 end #module Bio
 
 module Bio
@@ -155,18 +155,16 @@ end #end module TestPhyloXMLData
     end
 
     def test__validate_validation_error
-      libxml_set_handler_quiet
       assert_raise(RuntimeError) {
         @phyloxml.instance_eval {
           _validate(:string, '<a>test</a>')
         }
       }
-      libxml_set_handler_verbose
     end
 
     def test__schema
       s = @phyloxml.instance_eval { _schema }
-      assert_instance_of(LibXML::XML::Schema, s)
+      assert_instance_of(Nokogiri::XML::Schema, s)
     end
 
     def test__secure_filename
@@ -185,23 +183,12 @@ end #end module TestPhyloXMLData
 
     def test_ClosedPhyloXMLParser
       cp = Bio::PhyloXML::Parser::ClosedPhyloXMLParser.new
-      assert_raise(LibXML::XML::Error) { cp.next_tree }
+      assert_raise(RuntimeError) { cp.next_tree }
     end
 
     private
 
-    def libxml_set_handler_quiet
-      # Sets quiet handler.
-      # Note that there are no way to get current handler.
-      LibXML::XML::Error.set_handler(&LibXML::XML::Error::QUIET_HANDLER)
-    end
-
-    def libxml_set_handler_verbose
-      # Sets verbose handler (default LibXML error handler).
-      # Note that there are no way to get current handler.
-      LibXML::XML::Error.set_handler(&LibXML::XML::Error::VERBOSE_HANDLER)
-    end
-  end #class TestPhyloXML_private_methods
+ end #class TestPhyloXML_private_methods
 
 
 
@@ -239,23 +226,23 @@ end #end module TestPhyloXMLData
     def test_close_after_close
       phyloxml = phyloxml_open
       phyloxml.close
-      assert_raise(LibXML::XML::Error) { phyloxml.close }
+      assert_raise(RuntimeError) { phyloxml.close }
     end
 
     def test_next_tree_after_close
       phyloxml = phyloxml_open
       phyloxml.close
-      assert_raise(LibXML::XML::Error) { phyloxml.next_tree }
+      assert_raise(RuntimeError) { phyloxml.next_tree }
     end
 
     def test_next_tree_after_open_with_block
       phyloxml = phyloxml_open { |arg| arg }
-      assert_raise(LibXML::XML::Error) { phyloxml.next_tree }
+      assert_raise(RuntimeError) { phyloxml.next_tree }
     end
 
     def test_close_after_open_with_block
       phyloxml = phyloxml_open { |arg| arg }
-      assert_raise(LibXML::XML::Error) { phyloxml.close }
+      assert_raise(RuntimeError) { phyloxml.close }
     end
 
     def test_close_in_open_with_block
@@ -264,7 +251,7 @@ end #end module TestPhyloXMLData
         assert_nil(arg.close)
         ret
       end
-      assert_raise(LibXML::XML::Error) { phyloxml.close }
+      assert_raise(RuntimeError) { phyloxml.close }
     end
 
     def test_close_does_not_affect_io
